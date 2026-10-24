@@ -138,6 +138,18 @@ def smoke_test():
   climate=[f for f in fs if 'acc_precip' in (f.get('properties',{}).get('parameterId') or [])]
   print('DMI_SMOKE stations',len(fs),'rain_stations',len(climate),'example',json.dumps((climate or fs or [{}])[0].get('properties',{}).get('name')),flush=True)
  except Exception as exc:print('DMI_SMOKE_ERROR stations',str(exc),flush=True)
+ # Verify the new server-side area-weighted analyzer with actual DMI observations.
+ for mode in ('day','month'):
+  try:
+   import datetime as dt
+   a=dt.date(2024,10,1)
+   b=dt.date(2024,10,7) if mode=='day' else dt.date(2024,10,31)
+   spec={'mode':mode,'days':7,'months':1}
+   row=analysis_api.download(2024,a,b,spec,[11.93,54.99,11.98,55.04],threading.Event())
+   print('REGNATLAS_BACKEND_SMOKE',mode,
+         'usable',bool(row),'mm',row.get('total') if row else None,
+         'cells',len(row['cells']) if row else 0,flush=True)
+  except Exception as exc:print('REGNATLAS_BACKEND_SMOKE_ERROR',mode,repr(exc),flush=True)
  for mode in ('day','month'):
   params={'parameterId':'acc_precip','timeResolution':mode,'bbox':'11.8,54.9,12.1,55.2','datetime':'2024-10-01T00:00:00Z/2024-10-04T23:59:59Z' if mode=='day' else '2024-10-01T00:00:00Z/2024-10-31T23:59:59Z','limit':'15'}
   try:
