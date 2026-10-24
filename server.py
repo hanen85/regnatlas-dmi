@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """RegnAtlas: static website plus safe DMI Climate Data API proxy."""
-import hashlib,json,os,re,time,threading
+import hashlib,json,os,re,time,threading,gzip
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from urllib.parse import urlsplit,parse_qs,urlencode
@@ -11,7 +11,17 @@ CACHE=HERE/'.cache'
 DMI='https://opendataapi.dmi.dk/v2/climateData/collections/'
 class App(BaseHTTPRequestHandler):
  def send(self,status,body,mime='application/json; charset=utf-8'):
-  self.send_response(status);self.send_header('Content-Type',mime);self.send_header('Content-Length',str(len(body)));self.send_header('Access-Control-Allow-Origin','same-origin');self.send_header('X-Content-Type-Options','nosniff');self.end_headers()
+  compressed=('gzip' in self.headers.get('Accept-Encoding','').lower() and len(body)>4096)
+  if compressed: body=gzip.compress(body,compresslevel=5)
+  self.send_response(status)
+  self.send_header('Content-Type',mime)
+  self.send_header('Content-Length',str(len(body)))
+  self.send_header('Vary','Accept-Encoding')
+  if compressed:self.send_header('Content-Encoding','gzip')
+  self.send_header('Access-Control-Allow-Origin','same-origin')
+  self.send_header('X-Content-Type-Options','nosniff')
+  if status==200 and self.path.startswith('/api/dmi'):self.send_header('Cache-Control','public, max-age=3600')
+  self.end_headers()
   try:self.wfile.write(body)
   except (BrokenPipeError,ConnectionResetError):pass
  def error(self,status,message):self.send(status,json.dumps({'error':message},ensure_ascii=False).encode())
@@ -54,6 +64,16 @@ class App(BaseHTTPRequestHandler):
    if len(data)>22*1024*1024:return self.error(413,'DMI svar for stort')
    parsed=json.loads(data)
    if not isinstance(parsed.get('features'),list):return self.error(502,'Uventet DMI-format')
+   # Keep the geometry, cell metadata and values used by the frontend.
+   # Removing duplicate, unused DMI properties makes 30-year analysis much lighter on phones.
+   allowed={'parameterId','timeResolution','cellId','from','value','qcStatus'}
+   compact={'type':parsed.get('type','FeatureCollection'),'links':parsed.get('links',[]),
+            'numberReturned':parsed.get('numberReturned',len(parsed['features'])),'features':[]}
+   for f in parsed['features']:
+    properties=f.get('properties') or {}
+    compact['features'].append({'type':'Feature','geometry':f.get('geometry'),
+        'properties':{k:v for k,v in properties.items() if k in allowed}})
+   data=json.dumps(compact,separators=(',',':'),ensure_ascii=False).encode()
    cache.write_bytes(data)
    self.send(200,data)
   except HTTPError as e:
