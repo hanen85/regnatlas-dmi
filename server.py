@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """RegnAtlas: static website plus safe DMI Climate Data API proxy."""
-import hashlib,json,os,re,time
+import hashlib,json,os,re,time,threading
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from urllib.parse import urlsplit,parse_qs,urlencode
@@ -61,7 +61,20 @@ class App(BaseHTTPRequestHandler):
    self.error(502,'DMI returnerede HTTP '+str(e.code)+': '+detail[:300])
   except (URLError,TimeoutError,OSError,ValueError) as e:self.error(502,'Kunne ikke hente data fra DMI: '+str(e))
  def log_message(self,fmt,*args):print(fmt%args,flush=True)
+def smoke_test():
+ for mode in ('day','month'):
+  params={'parameterId':'acc_precip','timeResolution':mode,'bbox':'11.8,54.9,12.1,55.2','datetime':'2024-10-01T00:00:00Z/2024-10-04T23:59:59Z' if mode=='day' else '2024-10-01T00:00:00Z/2024-10-31T23:59:59Z','limit':'15'}
+  try:
+   url=DMI+'10kmGridValue/items?'+urlencode(params)
+   with urlopen(Request(url,headers={'User-Agent':'RegnAtlas/2.0','Accept':'application/json'}),timeout=25) as resp:
+    result=json.loads(resp.read(500000))
+   features=result.get('features',[])
+   props=features[0].get('properties',{}) if features else {}
+   print('DMI_SMOKE',mode,'features',len(features),'sample',json.dumps({'from':props.get('from'),'cellId':props.get('cellId'),'value':props.get('value'),'timeResolution':props.get('timeResolution')}),flush=True)
+  except Exception as exc:print('DMI_SMOKE_ERROR',mode,str(exc),flush=True)
+
 if __name__=='__main__':
  port=int(os.getenv('PORT','8765'))
  print('RegnAtlas lytter på port',port,flush=True)
+ threading.Thread(target=smoke_test,daemon=True).start()
  ThreadingHTTPServer(('0.0.0.0',port),App).serve_forever()
