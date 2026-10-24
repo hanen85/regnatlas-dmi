@@ -18,6 +18,7 @@ class App(BaseHTTPRequestHandler):
   self.send_header('Content-Type',mime)
   self.send_header('Content-Length',str(len(body)))
   self.send_header('Vary','Accept-Encoding')
+  if self.path.startswith('/api/analyze/') or self.path.startswith('/index.html') or self.path=='/':self.send_header('Cache-Control','no-store')
   if compressed:self.send_header('Content-Encoding','gzip')
   self.send_header('Access-Control-Allow-Origin','same-origin')
   self.send_header('X-Content-Type-Options','nosniff')
