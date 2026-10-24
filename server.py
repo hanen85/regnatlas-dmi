@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """RegnAtlas: static website plus safe DMI Climate Data API proxy."""
 import hashlib,json,os,re,time,threading,gzip
+import analysis_api
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from urllib.parse import urlsplit,parse_qs,urlencode
@@ -27,11 +28,30 @@ class App(BaseHTTPRequestHandler):
  def error(self,status,message):self.send(status,json.dumps({'error':message},ensure_ascii=False).encode())
  def do_GET(self):
   path=urlsplit(self.path)
+  if path.path=='/api/analyze/status':
+   token=parse_qs(path.query).get('id',[''])[0]
+   try:return self.send(200,json.dumps(analysis_api.get(token),separators=(',',':')).encode())
+   except KeyError:return self.error(404,'Analysen er udløbet eller blev ikke fundet.')
   if path.path=='/api/dmi':return self.dmi(path.query)
   if path.path=='/api/stations':return self.stations(path.query)
   if path.path=='/health':return self.send(200,b'{"status":"ok"}')
   if path.path not in ('/','/index.html'):return self.error(404,'Ikke fundet')
   self.send(200,(HERE/'index.html').read_bytes(),'text/html; charset=utf-8')
+ def do_POST(self):
+  path=urlsplit(self.path).path
+  if path not in ('/api/analyze/start','/api/analyze/cancel'):return self.error(404,'Ikke fundet')
+  try:
+   size=int(self.headers.get('Content-Length','0'))
+   if size<1 or size>4096:return self.error(413,'Ugyldig anmodning')
+   payload=json.loads(self.rfile.read(size))
+   if path=='/api/analyze/start':
+    job=analysis_api.start(payload.get('spec',{}),payload.get('bbox',[]))
+    return self.send(200,json.dumps({'id':job}).encode())
+   token=str(payload.get('id',''))
+   cancelled=analysis_api.cancel(token)
+   return self.send(200,json.dumps({'cancelled':cancelled}).encode())
+  except (ValueError,TypeError,KeyError) as exc:return self.error(400,str(exc))
+  except RuntimeError as exc:return self.error(409,str(exc))
  def dmi(self,query):
   q={k:v[-1] for k,v in parse_qs(query).items()}
   if set(q)-{'grid','parameterId','timeResolution','bbox','datetime','offset','limit','sortorder'}:return self.error(400,'Ukendt parameter')
