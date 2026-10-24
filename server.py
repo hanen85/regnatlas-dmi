@@ -32,7 +32,16 @@ class App(BaseHTTPRequestHandler):
    assert 0<limit<=10000 and 0<=offset<=500000
    assert re.fullmatch(r'\d{4}-\d\d-\d\dT00:00:00Z/\d{4}-\d\d-\d\dT23:59:59Z',q.get('datetime',''))
   except (ValueError,AssertionError):return self.error(400,'Ugyldigt område eller periode')
-  remote=DMI+q['grid']+'/items?'+urlencode({k:q[k] for k in ('parameterId','timeResolution','bbox','datetime','offset','limit','sortorder')})
+  # DMI's geographic grid is 10 km; tiny phone selections can contain no grid point.
+  # Expand the query to a minimum of about 20 km while staying centered on the selected area.
+  west,south,east,north=coords
+  midlat=(north+south)/2;midlon=(east+west)/2
+  minlat=.20;minlon=.20
+  west=min(west,midlon-minlon/2);east=max(east,midlon+minlon/2)
+  south=min(south,midlat-minlat/2);north=max(north,midlat+minlat/2)
+  q['bbox']=','.join(f'{x:.5f}' for x in (west,south,east,north))
+  # Avoid sorting: DMI documentation notes it is slower and not necessary here.
+  remote=DMI+q['grid']+'/items?'+urlencode({k:q[k] for k in ('parameterId','timeResolution','bbox','datetime','offset','limit')})
   key=hashlib.sha256(remote.encode()).hexdigest()
   CACHE.mkdir(parents=True,exist_ok=True)
   cache=CACHE/(key+'.json')
@@ -45,7 +54,10 @@ class App(BaseHTTPRequestHandler):
    if not isinstance(parsed.get('features'),list):return self.error(502,'Uventet DMI-format')
    cache.write_bytes(data)
    self.send(200,data)
-  except HTTPError as e:self.error(502,'DMI returnerede HTTP '+str(e.code))
+  except HTTPError as e:
+   detail=e.read(1000).decode('utf-8',errors='replace').replace('\\n',' ')
+   print('DMI API ERROR',e.code,remote,detail[:650],flush=True)
+   self.error(502,'DMI returnerede HTTP '+str(e.code)+': '+detail[:300])
   except (URLError,TimeoutError,OSError,ValueError) as e:self.error(502,'Kunne ikke hente data fra DMI: '+str(e))
  def log_message(self,fmt,*args):print(fmt%args,flush=True)
 def diagnostics():
