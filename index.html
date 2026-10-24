@@ -114,7 +114,7 @@ const shapes=new L.FeatureGroup().addTo(map),usedLayer=new L.FeatureGroup().addT
 let selection=null,exportRows=[],activeSpec=null,analysis=0;
 const draw=new L.Control.Draw({position:'topleft',draw:{rectangle:{shapeOptions:{color:'#106cc5',weight:3,fillOpacity:.11}},polyline:false,polygon:false,marker:false,circle:false,circlemarker:false},edit:{featureGroup:shapes,edit:true,remove:true}});
 map.addControl(draw);
-function resetResult(){analysis++;usedLayer.clearLayers();stationsLayer.clearLayers();$('result').classList.add('hidden');}
+function resetResult(){analysis++;$('calc').disabled=false;usedLayer.clearLayers();stationsLayer.clearLayers();$('result').classList.add('hidden');$('status').textContent='Området er ændret. Beregn igen for at opdatere analysen.';}
 map.on(L.Draw.Event.CREATED,e=>{shapes.clearLayers();selection=e.layer;shapes.addLayer(selection);resetResult();$('selection').textContent='Område valgt · '+fmt(areaBox(bounds()))+' km² (omtrentligt)';});
 map.on(L.Draw.Event.EDITED,()=>{resetResult();$('selection').textContent='Område opdateret · '+fmt(areaBox(bounds()))+' km² (omtrentligt)';});
 map.on(L.Draw.Event.DELETED,()=>{selection=null;resetResult();$('selection').textContent='Intet område markeret endnu.';});
@@ -248,12 +248,12 @@ function render(rows,spec,b,failed,token){
  $('statsdetail').textContent='Statistikken bygger på '+n+' historiske år og '+(spec.monthly?spec.months+' kalendermåneder':spec.days+' døgn')+' pr. år. '+failed+' historiske år blev udeladt pga. manglende datadækning. Standardafvigelsen viser variationen mellem år; trenden er kun beskrivende.';
  const maxbar=max||1;
  $('bars').innerHTML=ordered.map(r=>'<div class="bar-row"><span>'+r.year+'</span><div class="bar-bg"><div class="bar-fill" style="width:'+Math.max(1,100*r.total/maxbar).toFixed(1)+'%"></div></div><span>'+fmt(r.total)+' mm</span></div>').join('');
- const sources=new Map();for(const row of rows){for(const c of row.cells){let obj=sources.get(c.id);if(!obj){obj={id:c.id,polygon:c.polygon,weight:c.weight,years:0};sources.set(c.id,obj)}obj.years++;obj.weight=c.weight;}}
+ const sources=new Map();for(const row of rows){for(const c of row.cells){let obj=sources.get(c.id);if(!obj){obj={id:c.id,polygon:c.polygon,weight:0,weightSum:0,years:0};sources.set(c.id,obj)}obj.years++;obj.weightSum+=c.weight;obj.weight=obj.weightSum/obj.years;}}
  usedLayer.clearLayers();let fallback=rows.some(r=>r.fallback);
  for(const c of sources.values()){
   const feat={type:'Feature',geometry:c.polygon,properties:{}};
   const poly=L.geoJSON(feat,{style:{color:'#d3952a',weight:2,fillColor:'#f5b74b',fillOpacity:.15}});
-  poly.bindPopup('<strong>DMI-grid: '+escapeHtml(c.id)+'</strong><br>Ca. '+fmt(c.weight*100)+' % af det anvendte areal (seneste forekomst)<br>'+c.years+' historiske år<br>Afledt af målestationer, ikke en fysisk station.');
+  poly.bindPopup('<strong>DMI-grid: '+escapeHtml(c.id)+'</strong><br>Ca. '+fmt(c.weight*100)+' % af det anvendte areal (gennemsnit)<br>'+c.years+' historiske år<br>Afledt af målestationer, ikke en fysisk station.');
   usedLayer.addLayer(poly);
  }
  const sr=Array.from(sources.values()).sort((a,b)=>b.weight-a.weight);
