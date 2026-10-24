@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """RegnAtlas: static website plus safe DMI Climate Data API proxy."""
-import hashlib,json,mimetypes,os,re,time,threading
+import hashlib,json,os,re,time
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from urllib.parse import urlsplit,parse_qs,urlencode
@@ -18,13 +18,14 @@ class App(BaseHTTPRequestHandler):
  def do_GET(self):
   path=urlsplit(self.path)
   if path.path=='/api/dmi':return self.dmi(path.query)
+  if path.path=='/health':return self.send(200,b'{"status":"ok"}')
   if path.path not in ('/','/index.html'):return self.error(404,'Ikke fundet')
   self.send(200,(HERE/'index.html').read_bytes(),'text/html; charset=utf-8')
  def dmi(self,query):
   q={k:v[-1] for k,v in parse_qs(query).items()}
   if set(q)-{'grid','parameterId','timeResolution','bbox','datetime','offset','limit','sortorder'}:return self.error(400,'Ukendt parameter')
   if q.get('grid') not in ('10kmGridValue','20kmGridValue') or q.get('parameterId')!='acc_precip' or q.get('timeResolution') not in ('month','day'):return self.error(400,'Ugyldig dataforespørgsel')
-  if q.get('sortorder')!='from,ASC':return self.error(400,'Ugyldig sortering')
+  if 'sortorder' in q and q['sortorder'] not in ('from,ASC','from,DESC'):return self.error(400,'Ugyldig sortering')
   try:
    coords=list(map(float,q.get('bbox','').split(',')))
    assert len(coords)==4 and 7<=coords[0]<coords[2]<=17 and 54<=coords[1]<coords[3]<=59
@@ -60,23 +61,7 @@ class App(BaseHTTPRequestHandler):
    self.error(502,'DMI returnerede HTTP '+str(e.code)+': '+detail[:300])
   except (URLError,TimeoutError,OSError,ValueError) as e:self.error(502,'Kunne ikke hente data fra DMI: '+str(e))
  def log_message(self,fmt,*args):print(fmt%args,flush=True)
-def diagnostics():
- samples=[
-  ('original',{'parameterId':'acc_precip','timeResolution':'month','bbox':'11.93085,54.99919,11.93825,55.00526','datetime':'2016-11-01T00:00:00Z/2016-11-30T23:59:59Z','sortorder':'from,ASC','limit':'5'}),
-  ('no_sort',{'parameterId':'acc_precip','timeResolution':'month','bbox':'11.93085,54.99919,11.93825,55.00526','datetime':'2016-11-01T00:00:00Z/2016-11-30T23:59:59Z','limit':'5'}),
-  ('large_bbox',{'parameterId':'acc_precip','timeResolution':'month','bbox':'11.8,54.9,12.1,55.2','datetime':'2016-11-01T00:00:00Z/2016-11-30T23:59:59Z','limit':'5'}),
-  ('simple',{'parameterId':'acc_precip','timeResolution':'month','limit':'1'}),
- ]
- for name,query in samples:
-  url=DMI+'10kmGridValue/items?'+urlencode(query)
-  try:
-   with urlopen(Request(url,headers={'Accept':'application/json','User-Agent':'RegnAtlas/1.0'}),timeout=15) as resp: data=resp.read(600)
-   print('DMI DIAG',name,'OK',data[:250].decode(errors='replace'),flush=True)
-  except HTTPError as e:print('DMI DIAG',name,'HTTP',e.code,e.read(1500).decode(errors='replace'),flush=True)
-  except Exception as e:print('DMI DIAG',name,'EXC',repr(e),flush=True)
-
 if __name__=='__main__':
  port=int(os.getenv('PORT','8765'))
  print('RegnAtlas lytter på port',port,flush=True)
- threading.Thread(target=diagnostics,daemon=True).start()
  ThreadingHTTPServer(('0.0.0.0',port),App).serve_forever()
