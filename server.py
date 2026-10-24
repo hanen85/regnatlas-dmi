@@ -18,6 +18,7 @@ class App(BaseHTTPRequestHandler):
  def do_GET(self):
   path=urlsplit(self.path)
   if path.path=='/api/dmi':return self.dmi(path.query)
+  if path.path=='/api/stations':return self.stations(path.query)
   if path.path=='/health':return self.send(200,b'{"status":"ok"}')
   if path.path not in ('/','/index.html'):return self.error(404,'Ikke fundet')
   self.send(200,(HERE/'index.html').read_bytes(),'text/html; charset=utf-8')
@@ -60,6 +61,34 @@ class App(BaseHTTPRequestHandler):
    print('DMI API ERROR',e.code,remote,detail[:650],flush=True)
    self.error(502,'DMI returnerede HTTP '+str(e.code)+': '+detail[:300])
   except (URLError,TimeoutError,OSError,ValueError) as e:self.error(502,'Kunne ikke hente data fra DMI: '+str(e))
+ def stations(self,query):
+  q={k:v[-1] for k,v in parse_qs(query).items()}
+  if set(q)!={'bbox'}:return self.error(400,'Ugyldig stationsforespørgsel')
+  try:
+   bounds=list(map(float,q['bbox'].split(',')))
+   assert len(bounds)==4
+   w,s,e,n=bounds
+   assert 7<=w<e<=17 and 54<=s<n<=59 and e-w<=3.1 and n-s<=2.1
+  except (ValueError,AssertionError):return self.error(400,'Ugyldigt kortområde')
+  # Stations in an expanded vicinity are informational, not proven interpolation inputs.
+  centerx=(w+e)/2;centery=(s+n)/2
+  w=max(7,min(w,centerx-.35));e=min(17,max(e,centerx+.35))
+  s=max(54,min(s,centery-.28));n=min(59,max(n,centery+.28))
+  url=DMI+'station/items?'+urlencode({'bbox':','.join(f'{v:.5f}' for v in (w,s,e,n)),'limit':'1000'})
+  key=hashlib.sha256(url.encode()).hexdigest()
+  CACHE.mkdir(parents=True,exist_ok=True)
+  file=CACHE/('station-'+key+'.json')
+  if file.exists() and time.time()-file.stat().st_mtime<604800:return self.send(200,file.read_bytes())
+  try:
+   with urlopen(Request(url,headers={'Accept':'application/json','User-Agent':'RegnAtlas/2.0'}),timeout=25) as resp:
+    data=resp.read(5*1024*1024+1)
+   if len(data)>5*1024*1024:return self.error(502,'Stationstjenestens svar er for stort')
+   result=json.loads(data)
+   if not isinstance(result.get('features'),list):return self.error(502,'Uventet svar fra stationstjenesten')
+   file.write_bytes(data)
+   self.send(200,data)
+  except HTTPError as exc:self.error(502,'DMI stationer HTTP '+str(exc.code))
+  except (URLError,TimeoutError,OSError,ValueError) as exc:self.error(502,'DMI stationer: '+str(exc))
  def log_message(self,fmt,*args):print(fmt%args,flush=True)
 def smoke_test():
  for mode in ('day','month'):
