@@ -54,7 +54,7 @@ footer{font-size:12px;color:#748c9c;margin-top:18px;padding-bottom:18px}
 <section class="panel"><div class="topline"><h2>1 · Tegn dit område</h2><span class="pill">Danmark</span></div>
 <p class="muted">Tryk på firkant-ikonet på kortet og tegn omkring det område, du vil undersøge. Tryk på feltet for detaljer efter beregning.</p>
 <div id="map"></div><p class="map-caption muted" id="selection">Intet område markeret endnu.</p>
-<div class="map-legend"><span><i class="marker"></i> Dit område</span><span><i class="marker used"></i> Anvendte DMI 10 × 10 km-felter</span></div></section>
+<div class="map-legend"><span><i class="marker"></i> Dit område</span><span><i class="marker used"></i> Anvendte DMI 10 × 10 km-felter</span><span><i class="marker" style="background:#ebdcfa;border-color:#8055c0"></i> Nærliggende nedbørsstationer</span></div></section>
 <section class="panel"><h2>2 · Vælg periode og historik</h2>
 <div class="row">
  <div class="field"><label for="period">Fremtidig periode</label><select id="period">
@@ -89,6 +89,9 @@ footer{font-size:12px;color:#748c9c;margin-top:18px;padding-bottom:18px}
 <p class="muted" id="sourceintro"></p>
 <div class="source-grid"><table><thead><tr><th>DMI-felt</th><th>Bidrag til areal</th><th>Anvendte år</th></tr></thead><tbody id="sources"></tbody></table></div>
 <p id="fallback" class="inline-note hidden"></p>
+<h3>Nærliggende fysiske målestationer</h3>
+<p id="stationnote" class="muted">Stationer i nærheden vises, når beregningen er gennemført. De kan være aktive i dag uden nødvendigvis at have været aktive i alle historiske år.</p>
+<div id="stationlist" class="source-grid hidden"><table><thead><tr><th>Station</th><th>ID</th><th>Status</th></tr></thead><tbody id="stationrows"></tbody></table></div>
 <p class="muted">DMI beskriver gridværdier som <strong>interpolerede arealdata</strong> fra meteorologiske målestationer. Det er altså ikke regnmålere placeret midt i firkanterne, og det enkelte felts nøjagtige bidragydende stationer oplyses ikke i disse API-poster.</p>
 <p><a href="https://www.dmi.dk/friedata/dokumentation/climate-data" target="_blank" rel="noopener">DMIs databeskrivelse og interpolationsmetode</a> · <a href="https://www.dmi.dk/friedata/dokumentation/apis/climate-data-api-1" target="_blank" rel="noopener">Climate Data API</a></p>
 <details><summary style="font-weight:650;cursor:pointer">Åbn datalinks og årstabel</summary><table><thead><tr><th>Historisk periode</th><th>Resultat</th><th>Kilde</th></tr></thead><tbody id="rawyears"></tbody></table></details>
@@ -107,11 +110,11 @@ footer{font-size:12px;color:#748c9c;margin-top:18px;padding-bottom:18px}
 const $=id=>document.getElementById(id),fmt=n=>Number(n).toLocaleString('da-DK',{maximumFractionDigits:1,minimumFractionDigits:1});
 const map=L.map('map',{preferCanvas:true}).setView([56.15,10.6],7);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18,attribution:'© OpenStreetMap'}).addTo(map);
-const shapes=new L.FeatureGroup().addTo(map),usedLayer=new L.FeatureGroup().addTo(map);
+const shapes=new L.FeatureGroup().addTo(map),usedLayer=new L.FeatureGroup().addTo(map),stationsLayer=new L.FeatureGroup().addTo(map);
 let selection=null,exportRows=[],activeSpec=null,analysis=0;
 const draw=new L.Control.Draw({position:'topleft',draw:{rectangle:{shapeOptions:{color:'#106cc5',weight:3,fillOpacity:.11}},polyline:false,polygon:false,marker:false,circle:false,circlemarker:false},edit:{featureGroup:shapes,edit:true,remove:true}});
 map.addControl(draw);
-function resetResult(){analysis++;usedLayer.clearLayers();$('result').classList.add('hidden');}
+function resetResult(){analysis++;usedLayer.clearLayers();stationsLayer.clearLayers();$('result').classList.add('hidden');}
 map.on(L.Draw.Event.CREATED,e=>{shapes.clearLayers();selection=e.layer;shapes.addLayer(selection);resetResult();$('selection').textContent='Område valgt · '+fmt(areaBox(bounds()))+' km² (omtrentligt)';});
 map.on(L.Draw.Event.EDITED,()=>{resetResult();$('selection').textContent='Område opdateret · '+fmt(areaBox(bounds()))+' km² (omtrentligt)';});
 map.on(L.Draw.Event.DELETED,()=>{selection=null;resetResult();$('selection').textContent='Intet område markeret endnu.';});
@@ -230,7 +233,7 @@ async function fetchOne(x,spec,b,token){
 }
 function quantile(sorted,q){const p=(sorted.length-1)*q,i=Math.floor(p),f=p-i;return sorted[i]*(1-f)+sorted[Math.min(i+1,sorted.length-1)]*f}
 function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function render(rows,spec,b,failed){
+function render(rows,spec,b,failed,token){
  const nums=rows.map(r=>r.total),n=nums.length,sorted=nums.slice().sort((a,b)=>a-b);
  const mean=nums.reduce((a,v)=>a+v,0)/n,median=quantile(sorted,.5),q10=quantile(sorted,.1),q90=quantile(sorted,.9);
  const dev=Math.sqrt(nums.reduce((s,v)=>s+(v-mean)**2,0)/Math.max(1,n-1)),max=sorted[n-1],min=sorted[0],threshold=+$('threshold').value;
@@ -259,7 +262,41 @@ function render(rows,spec,b,failed){
  $('fallback').classList.toggle('hidden',!fallback);$('fallback').textContent='Bemærk: For mindst ét år var der ingen DMI-gridflade, som overlappede din markering. Her blev nærmeste tilgængelige felt i stedet brugt som en tydeligt angivet tilnærmelse.';
  $('rawyears').innerHTML=ordered.map(r=>'<tr><td>'+r.start+' – '+r.end+'</td><td>'+fmt(r.total)+' mm</td><td><a href="'+escapeHtml(r.source)+'" target="_blank" rel="noopener">DMI API</a></td></tr>').join('');
  exportRows=ordered;activeSpec=spec;$('result').classList.remove('hidden');$('result').scrollIntoView({behavior:'smooth',block:'start'});
+ loadStations(b,token).catch(e=>{if(token===analysis)$('stationnote').textContent='Stationslisten kunne ikke hentes: '+e.message;});
 }
+
+async function loadStations(b,token){
+ $('stationlist').classList.add('hidden');
+ $('stationnote').textContent='Henter registrerede nedbørsstationer i nærheden…';
+ const response=await fetch('/api/stations?'+new URLSearchParams({bbox:b.map(x=>x.toFixed(5)).join(',')}));
+ const data=await response.json();
+ if(!response.ok)throw Error(data.error||'Stationerne er ikke tilgængelige.');
+ if(token!==analysis)return;
+ stationsLayer.clearLayers();
+ let stations=(data.features||[]).filter(f=>{
+  const p=f.properties||{},params=p.parameterId;
+  return f.geometry&&f.geometry.type==='Point'&&Array.isArray(f.geometry.coordinates)&&Array.isArray(params)&&params.includes('acc_precip');
+ });
+ const center=[(b[0]+b[2])/2,(b[1]+b[3])/2];
+ stations=stations.sort((a,z)=>{
+  const ca=a.geometry.coordinates,cz=z.geometry.coordinates;
+  return Math.hypot((ca[0]-center[0])*.6,ca[1]-center[1])-Math.hypot((cz[0]-center[0])*.6,cz[1]-center[1]);
+ }).slice(0,60);
+ if(!stations.length){$('stationnote').textContent='Ingen nedbørsstationer blev fundet i det tilstødende DMI-stationsregister.';return;}
+ const unique=new Set(),valid=[];
+ for(const f of stations){const p=f.properties||{},co=f.geometry.coordinates,id=String(p.stationId||'?');
+  const key=id+','+co.join(',');if(unique.has(key))continue;unique.add(key);valid.push(f);
+  L.circleMarker([co[1],co[0]],{radius:6,color:'#7142ac',fillColor:'#c2a3eb',fillOpacity:.9,weight:2})
+  .bindPopup('<strong>'+escapeHtml(p.name||'DMI-station')+'</strong><br>Stationsnummer: '+escapeHtml(id)+'<br>Type: '+escapeHtml(p.type||'Ukendt')+'<br>Status: '+escapeHtml(p.status||'Ukendt')+'<br><em>Nærliggende station; ikke dokumenteret som direkte input til områdets gridværdi.</em>')
+  .addTo(stationsLayer);
+ }
+ $('stationnote').textContent=valid.length+' registrerede DMI-stationspositioner med nedbørsmåling i nærheden (lilla punkter). DMI oplyser ikke, om netop disse stationer har bidraget til gridinterpolationen for hver historisk dato.';
+ $('stationrows').innerHTML=valid.slice(0,25).map(f=>{
+  const p=f.properties||{};return '<tr><td>'+escapeHtml(p.name||'Ukendt')+'</td><td>'+escapeHtml(p.stationId||'–')+'</td><td>'+escapeHtml(p.status||'–')+'</td></tr>';
+ }).join('');
+ $('stationlist').classList.remove('hidden');
+}
+
 $('csv').onclick=()=>{
  if(!activeSpec||!exportRows.length)return;
  const rows=['År;Fra;Til;Nedbør_mm;Gridfelter;DMI_URL'];
@@ -285,7 +322,7 @@ $('calc').onclick=async()=>{
   }
   if(rows.length<3)throw Error('Kun '+rows.length+' historiske år havde tilstrækkelige data. Tegn et lidt større område eller prøv en anden periode.');
   rows.sort((a,b)=>a.year-b.year);
-  render(rows,spec,b,failed);
+  render(rows,spec,b,failed,token);
   $('status').textContent='Færdig: '+rows.length+' historiske perioder · '+rows.reduce((a,r)=>a+r.cells.length,0)+' gridårs-bidrag.';
  }catch(e){if(token===analysis){$('status').textContent='Beregningen mislykkedes: '+e.message;$('status').classList.add('error');}}
  finally{if(token===analysis)$('calc').disabled=false;}
