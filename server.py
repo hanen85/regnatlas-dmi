@@ -48,7 +48,23 @@ class App(BaseHTTPRequestHandler):
   except HTTPError as e:self.error(502,'DMI returnerede HTTP '+str(e.code))
   except (URLError,TimeoutError,OSError,ValueError) as e:self.error(502,'Kunne ikke hente data fra DMI: '+str(e))
  def log_message(self,fmt,*args):print(fmt%args,flush=True)
+def diagnostics():
+ samples=[
+  ('original',{'parameterId':'acc_precip','timeResolution':'month','bbox':'11.93085,54.99919,11.93825,55.00526','datetime':'2016-11-01T00:00:00Z/2016-11-30T23:59:59Z','sortorder':'from,ASC','limit':'5'}),
+  ('no_sort',{'parameterId':'acc_precip','timeResolution':'month','bbox':'11.93085,54.99919,11.93825,55.00526','datetime':'2016-11-01T00:00:00Z/2016-11-30T23:59:59Z','limit':'5'}),
+  ('large_bbox',{'parameterId':'acc_precip','timeResolution':'month','bbox':'11.8,54.9,12.1,55.2','datetime':'2016-11-01T00:00:00Z/2016-11-30T23:59:59Z','limit':'5'}),
+  ('simple',{'parameterId':'acc_precip','timeResolution':'month','limit':'1'}),
+ ]
+ for name,query in samples:
+  url=DMI+'10kmGridValue/items?'+urlencode(query)
+  try:
+   with urlopen(Request(url,headers={'Accept':'application/json','User-Agent':'RegnAtlas/1.0'}),timeout=15) as resp: data=resp.read(600)
+   print('DMI DIAG',name,'OK',data[:250].decode(errors='replace'),flush=True)
+  except HTTPError as e:print('DMI DIAG',name,'HTTP',e.code,e.read(1500).decode(errors='replace'),flush=True)
+  except Exception as e:print('DMI DIAG',name,'EXC',repr(e),flush=True)
+
 if __name__=='__main__':
  port=int(os.getenv('PORT','8765'))
  print('RegnAtlas lytter på port',port,flush=True)
+ threading.Thread(target=diagnostics,daemon=True).start()
  ThreadingHTTPServer(('0.0.0.0',port),App).serve_forever()
