@@ -65,7 +65,11 @@ footer{font-size:12px;color:#748c9c;margin-top:18px;padding-bottom:18px}
  <div class="field"><label for="years">Sammenlign med</label><select id="years"><option value="5">5 tidligere år</option><option value="10" selected>10 tidligere år</option><option value="20">20 tidligere år</option><option value="30">30 tidligere år</option></select></div>
  <div class="field"><label for="threshold">Grænse for våd periode</label><select id="threshold"><option value="10">10 mm</option><option value="25">25 mm</option><option value="50" selected>50 mm</option><option value="75">75 mm</option><option value="100">100 mm</option><option value="150">150 mm</option><option value="200">200 mm</option></select></div>
 </div>
-<button id="calc" class="mainbtn">Beregn nedbør fra DMI</button><div class="status" id="status" role="status" aria-live="polite"></div>
+<button id="calc" class="mainbtn">Beregn nedbør fra DMI</button><div id="work" class="hidden" style="padding:13px 0 4px">
+<div class="topline"><strong id="worklabel" style="font-size:13px">Henter historiske år …</strong><button id="cancel" type="button" class="minibtn">Afbryd</button></div>
+<div role="progressbar" aria-label="Indlæste år" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="barrole" style="margin:9px 0;background:#e1ebf1;overflow:hidden;height:12px;border-radius:7px"><div id="bar" style="height:100%;width:0%;background:#087daa;transition:width .18s"></div></div>
+<div id="recentyears" class="muted" style="max-height:60px;overflow:auto"></div>
+</div><div class="status" id="status" role="status" aria-live="polite"></div>
 </section>
 <section id="result" class="panel hidden">
 <div class="topline"><h2>3 · Historisk baseret regnestimat</h2><button class="minibtn" id="csv">Eksporter CSV</button></div>
@@ -111,10 +115,18 @@ const $=id=>document.getElementById(id),fmt=n=>Number(n).toLocaleString('da-DK',
 const map=L.map('map',{preferCanvas:true}).setView([56.15,10.6],7);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18,attribution:'© OpenStreetMap'}).addTo(map);
 const shapes=new L.FeatureGroup().addTo(map),usedLayer=new L.FeatureGroup().addTo(map),stationsLayer=new L.FeatureGroup().addTo(map);
-let selection=null,exportRows=[],activeSpec=null,analysis=0;
+let selection=null,exportRows=[],activeSpec=null,analysis=0,activeRequests=new Set();
+function stopPending(){for(const req of activeRequests)req.abort();activeRequests.clear()}
+function endWork(){ $('work').classList.add('hidden');$('calc').disabled=false;}
+function setProgress(done,total,successful,failed,recent){
+ const pct=Math.round(100*done/total);$('bar').style.width=pct+'%';$('barrole').setAttribute('aria-valuenow',pct);
+ $('worklabel').textContent=done+' af '+total+' historiske år undersøgt ('+pct+' %)';
+ $('status').textContent=successful+' år med data, '+failed+' uden tilstrækkelig dækning.';
+ $('recentyears').textContent=recent?'Senest behandlet: '+recent+'. Du kan afbryde uden at lukke siden.':'Henter DMI-data med op til tre samtidige forespørgsler …';
+}
 const draw=new L.Control.Draw({position:'topleft',draw:{rectangle:{shapeOptions:{color:'#106cc5',weight:3,fillOpacity:.11}},polyline:false,polygon:false,marker:false,circle:false,circlemarker:false},edit:{featureGroup:shapes,edit:true,remove:true}});
 map.addControl(draw);
-function resetResult(){analysis++;$('calc').disabled=false;usedLayer.clearLayers();stationsLayer.clearLayers();$('result').classList.add('hidden');$('status').textContent='Området er ændret. Beregn igen for at opdatere analysen.';}
+function resetResult(){analysis++;stopPending();endWork();usedLayer.clearLayers();stationsLayer.clearLayers();$('result').classList.add('hidden');$('status').textContent='Området er ændret. Beregn igen for at opdatere analysen.';}
 map.on(L.Draw.Event.CREATED,e=>{shapes.clearLayers();selection=e.layer;shapes.addLayer(selection);resetResult();$('selection').textContent='Område valgt · '+fmt(areaBox(bounds()))+' km² (omtrentligt)';});
 map.on(L.Draw.Event.EDITED,()=>{resetResult();$('selection').textContent='Område opdateret · '+fmt(areaBox(bounds()))+' km² (omtrentligt)';});
 map.on(L.Draw.Event.DELETED,()=>{selection=null;resetResult();$('selection').textContent='Intet område markeret endnu.';});
@@ -201,8 +213,14 @@ async function fetchOne(x,spec,b,token){
  for(let page=0;page<25;page++){
   if(token!==analysis)throw Error('Annulleret fordi området blev ændret.');
   const query=urlFor(x,spec,b,page*5000),appQuery=new URLSearchParams(query);appQuery.set('grid','10kmGridValue');
-  const resp=await fetch('/api/dmi?'+appQuery.toString());
-  let result;try{result=await resp.json()}catch{throw Error('Kunne ikke læse svaret fra DMI-serveren.');}
+  const controller=new AbortController();activeRequests.add(controller);
+  let resp,result;
+  const timeout=setTimeout(()=>controller.abort(),65000);
+  try{
+   resp=await fetch('/api/dmi?'+appQuery.toString(),{signal:controller.signal});
+   try{result=await resp.json()}catch{throw Error('Kunne ikke læse svaret fra DMI-serveren.');}
+  }finally{clearTimeout(timeout);activeRequests.delete(controller);}
+
   if(!resp.ok)throw Error(result.error||'DMI HTTP '+resp.status);
   const features=result.features||[];rawCount+=features.length;
   for(const f of features){
@@ -303,29 +321,57 @@ $('csv').onclick=()=>{
  for(const r of exportRows)rows.push([r.year,r.start,r.end,fmt(r.total),r.cells.length,r.source].join(';'));
  const blob=new Blob(['\ufeff'+rows.join('\r\n')],{type:'text/csv;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='regnatlas-'+iso(activeSpec.a)+'.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 };
+$('cancel').onclick=()=>{
+ if($('work').classList.contains('hidden'))return;
+ analysis++;stopPending();endWork();
+ $('status').classList.remove('error');
+ $('status').textContent='Beregningen er afbrudt. Du kan vælge en kortere historik eller beregne igen.';
+};
 $('calc').onclick=async()=>{
  if(!selection){$('status').textContent='Tegn først et område på kortet.';$('status').classList.add('error');return;}
- const token=++analysis;let spec,b;try{
+ stopPending();const token=++analysis;let spec,b;
+ try{
   spec=makeSpec();b=bounds();
-  if(b[2]-b[0]>3||b[3]-b[1]>2)throw Error('Det valgte område er for stort. Vælg et område på højst ca. 3 × 2 breddegrader.');
+  if(b[2]-b[0]>3||b[3]-b[1]>2)throw Error('Området er for stort. Vælg et område på højst ca. 3 × 2 breddegrader.');
   if(!spec.monthly&&(b[2]-b[0]>1.8||b[3]-b[1]>1.3))throw Error('Ved dagsberegninger: vælg et område på højst 1,8 × 1,3 grader. Vælg hele måneder for større områder.');
  }catch(e){$('status').textContent=e.message;$('status').classList.add('error');return;}
- $('calc').disabled=true;$('status').classList.remove('error');$('result').classList.add('hidden');usedLayer.clearLayers();
- const desired=+$('years').value,all=comparisons(spec,desired),rows=[];let failed=0;
- if(!all.length){$('status').textContent='Ingen afsluttede historiske perioder i DMI-arkivet.';$('calc').disabled=false;return;}
- try{
-  for(let i=0;i<all.length;i++){
-   $('status').textContent='Henter DMI-data: '+(i+1)+' / '+all.length+' historiske år ('+all[i].year+')…';
-   const row=await fetchOne(all[i],spec,b,token);
+ const desired=+$('years').value,all=comparisons(spec,desired),rows=[];
+ if(!all.length){$('status').textContent='Ingen afsluttede historiske perioder i DMI-arkivet.';return;}
+ $('calc').disabled=true;$('work').classList.remove('hidden');$('status').classList.remove('error');
+ $('result').classList.add('hidden');usedLayer.clearLayers();stationsLayer.clearLayers();
+ setProgress(0,all.length,0,0,'');
+ let done=0,failed=0,next=0,lastError=null;
+ const concurrency=Math.min(3,all.length);
+ async function worker(){
+  while(token===analysis){
+   const index=next++;if(index>=all.length)return;
+   const item=all[index];
+   try{
+    const row=await fetchOne(item,spec,b,token);
+    if(token!==analysis)return;
+    if(row.empty)failed++;else rows.push(row);
+   }catch(err){
+    if(token!==analysis)return;
+    if(err.name==='AbortError') {lastError=Error('DMI-opslaget tog for lang tid. Prøv igen eller vælg en mindre periode.');}
+    else lastError=err;
+    failed++;
+   }
    if(token!==analysis)return;
-   if(row.empty)failed++;else rows.push(row);
+   done++;setProgress(done,all.length,rows.length,failed,String(item.year));
+   // Giv mobilen tid til at opdatere status og fremdrift.
+   await new Promise(resolve=>setTimeout(resolve,10));
   }
-  if(rows.length<3)throw Error('Kun '+rows.length+' historiske år havde tilstrækkelige data. Tegn et lidt større område eller prøv en anden periode.');
+ }
+ try{
+  await Promise.all(Array.from({length:concurrency},()=>worker()));
+  if(token!==analysis)return;
+  if(rows.length<3)throw Error('Kun '+rows.length+' historiske år havde tilstrækkelige data. '+(lastError?'Seneste fejl: '+lastError.message:'Prøv et større område eller en kortere historik.'));
   rows.sort((a,b)=>a.year-b.year);
   render(rows,spec,b,failed,token);
-  $('status').textContent='Færdig: '+rows.length+' historiske perioder · '+rows.reduce((a,r)=>a+r.cells.length,0)+' gridårs-bidrag.';
- }catch(e){if(token===analysis){$('status').textContent='Beregningen mislykkedes: '+e.message;$('status').classList.add('error');}}
- finally{if(token===analysis)$('calc').disabled=false;}
+  $('status').textContent='Færdig: '+rows.length+' historiske perioder · '+rows.reduce((a,r)=>a+r.cells.length,0)+' gridårs-bidrag.'+(failed?' ('+failed+' år uden data)':'');
+ }catch(e){
+  if(token===analysis){$('status').textContent='Beregningen mislykkedes: '+e.message;$('status').classList.add('error');}
+ }finally{if(token===analysis){stopPending();endWork()}}
 };
 updateControls();
 </script></body></html>
