@@ -63,7 +63,6 @@ footer{font-size:12px;color:#748c9c;margin-top:18px;padding-bottom:18px}
  <div class="field"><label for="start">Startdato</label><input id="start" type="date"><small id="datehelp">Du kan ændre startdatoen.</small></div>
  <div class="field hidden" id="endbox"><label for="end">Slutdato</label><input id="end" type="date"></div>
  <div class="field"><label for="years">Sammenlign med</label><select id="years"><option value="5">5 tidligere år</option><option value="10" selected>10 tidligere år</option><option value="20">20 tidligere år</option><option value="30">30 tidligere år</option></select></div>
- <div class="field"><label for="threshold">Grænse for våd periode</label><select id="threshold"><option value="10">10 mm</option><option value="25">25 mm</option><option value="50" selected>50 mm</option><option value="75">75 mm</option><option value="100">100 mm</option><option value="150">150 mm</option><option value="200">200 mm</option></select></div>
 </div>
 <button id="calc" class="mainbtn">Beregn nedbør fra DMI</button><div id="work" class="hidden" style="padding:13px 0 4px">
 <div class="topline"><strong id="worklabel" style="font-size:13px">Henter historiske år …</strong><button id="cancel" type="button" class="minibtn">Afbryd</button></div>
@@ -75,10 +74,9 @@ footer{font-size:12px;color:#748c9c;margin-top:18px;padding-bottom:18px}
 <div class="topline"><h2>3 · Historisk baseret regnestimat</h2><button class="minibtn" id="csv">Eksporter CSV</button></div>
 <p id="span" class="muted"></p>
 <div class="resultgrid">
- <div class="stat hero-result"><div class="name">Gennemsnitlig nedbør</div><div id="mean" class="num">–</div><div class="muted">for hele perioden</div></div>
+ <div class="stat hero-result"><div class="name">Forventet nedbør (historisk gennemsnit)</div><div id="mean" class="num">–</div><div class="muted">samlet for den valgte periode</div></div>
  <div class="stat"><div class="name">Median</div><div id="median" class="num">–</div></div>
  <div class="stat"><div class="name">Typisk variation (P10–P90)</div><div id="range" class="num" style="font-size:18px">–</div></div>
- <div class="stat"><div class="name" id="wet-label">Andel år over 50 mm</div><div id="chance" class="num">–</div></div>
  <div class="stat"><div class="name">Tørreste historiske periode</div><div id="min" class="num">–</div></div>
  <div class="stat"><div class="name">Vådeste historiske periode</div><div id="max" class="num">–</div></div>
 </div>
@@ -260,10 +258,8 @@ function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':
 function render(rows,spec,b,failed,token){
  const nums=rows.map(r=>r.total),n=nums.length,sorted=nums.slice().sort((a,b)=>a-b);
  const mean=nums.reduce((a,v)=>a+v,0)/n,median=quantile(sorted,.5),q10=quantile(sorted,.1),q90=quantile(sorted,.9);
- const dev=Math.sqrt(nums.reduce((s,v)=>s+(v-mean)**2,0)/Math.max(1,n-1)),max=sorted[n-1],min=sorted[0],threshold=+$('threshold').value;
- const exceed=nums.filter(v=>v>=threshold).length;
+ const dev=Math.sqrt(nums.reduce((s,v)=>s+(v-mean)**2,0)/Math.max(1,n-1)),max=sorted[n-1],min=sorted[0];
  $('mean').textContent=fmt(mean)+' mm';$('median').textContent=fmt(median)+' mm';$('range').textContent=fmt(q10)+'–'+fmt(q90)+' mm';
- $('chance').textContent=Math.round(100*exceed/n)+' %';$('wet-label').textContent='Andel år med mindst '+threshold+' mm';
  $('min').textContent=fmt(min)+' mm';$('max').textContent=fmt(max)+' mm';$('std').textContent=fmt(dev)+' mm';
  const ordered=rows.slice().sort((a,b)=>a.year-b.year),xs=ordered.map(r=>r.year),avgx=xs.reduce((a,v)=>a+v,0)/n;
  const num=ordered.reduce((s,r)=>s+(r.year-avgx)*(r.total-mean),0),den=ordered.reduce((s,r)=>s+(r.year-avgx)**2,0),slope=den?10*num/den:0;
