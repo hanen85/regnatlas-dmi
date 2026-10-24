@@ -115,8 +115,14 @@ const $=id=>document.getElementById(id),fmt=n=>Number(n).toLocaleString('da-DK',
 const map=L.map('map',{preferCanvas:true}).setView([56.15,10.6],7);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18,attribution:'© OpenStreetMap'}).addTo(map);
 const shapes=new L.FeatureGroup().addTo(map),usedLayer=new L.FeatureGroup().addTo(map),stationsLayer=new L.FeatureGroup().addTo(map);
-let selection=null,exportRows=[],activeSpec=null,analysis=0,activeRequests=new Set();
-function stopPending(){for(const req of activeRequests)req.abort();activeRequests.clear()}
+let selection=null,exportRows=[],activeSpec=null,analysis=0,activeRequests=new Set(),analysisJobId=null;
+function stopPending(){
+ for(const req of activeRequests)req.abort();activeRequests.clear();
+ if(analysisJobId){
+  const id=analysisJobId;analysisJobId=null;
+  fetch('/api/analyze/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id}),keepalive:true}).catch(()=>{});
+ }
+}
 function endWork(){ $('work').classList.add('hidden');$('calc').disabled=false;}
 function setProgress(done,total,successful,failed,recent){
  const pct=Math.round(100*done/total);$('bar').style.width=pct+'%';$('barrole').setAttribute('aria-valuenow',pct);
@@ -268,7 +274,8 @@ function render(rows,spec,b,failed,token){
  $('bars').innerHTML=ordered.map(r=>'<div class="bar-row"><span>'+r.year+'</span><div class="bar-bg"><div class="bar-fill" style="width:'+Math.max(1,100*r.total/maxbar).toFixed(1)+'%"></div></div><span>'+fmt(r.total)+' mm</span></div>').join('');
  const sources=new Map();for(const row of rows){for(const c of row.cells){let obj=sources.get(c.id);if(!obj){obj={id:c.id,polygon:c.polygon,weight:0,weightSum:0,years:0};sources.set(c.id,obj)}obj.years++;obj.weightSum+=c.weight;obj.weight=obj.weightSum/obj.years;}}
  usedLayer.clearLayers();let fallback=rows.some(r=>r.fallback);
- for(const c of sources.values()){
+ for(const c of Array.from(sources.values()).sort((a,b)=>b.weight-a.weight).slice(0,120)){
+  if(!c.polygon)continue;
   const feat={type:'Feature',geometry:c.polygon,properties:{}};
   const poly=L.geoJSON(feat,{style:{color:'#d3952a',weight:2,fillColor:'#f5b74b',fillOpacity:.15}});
   poly.bindPopup('<strong>DMI-grid: '+escapeHtml(c.id)+'</strong><br>Ca. '+fmt(c.weight*100)+' % af det anvendte areal (gennemsnit)<br>'+c.years+' historiske år<br>Afledt af målestationer, ikke en fysisk station.');
@@ -325,53 +332,55 @@ $('cancel').onclick=()=>{
  if($('work').classList.contains('hidden'))return;
  analysis++;stopPending();endWork();
  $('status').classList.remove('error');
- $('status').textContent='Beregningen er afbrudt. Du kan vælge en kortere historik eller beregne igen.';
+ $('status').textContent='Beregningen er afbrudt på telefonen og på serveren.';
 };
+function delay(ms){return new Promise(resolve=>setTimeout(resolve,ms))}
 $('calc').onclick=async()=>{
- if(!selection){$('status').textContent='Tegn først et område på kortet.';$('status').classList.add('error');return;}
- stopPending();const token=++analysis;let spec,b;
+ if(!selection){$('status').textContent='Tegn først et område på kortet.';$('status').classList.add('error');return}
+ const token=++analysis;let spec,b;
  try{
   spec=makeSpec();b=bounds();
-  if(b[2]-b[0]>3||b[3]-b[1]>2)throw Error('Området er for stort. Vælg et område på højst ca. 3 × 2 breddegrader.');
-  if(!spec.monthly&&(b[2]-b[0]>1.8||b[3]-b[1]>1.3))throw Error('Ved dagsberegninger: vælg et område på højst 1,8 × 1,3 grader. Vælg hele måneder for større områder.');
- }catch(e){$('status').textContent=e.message;$('status').classList.add('error');return;}
- const desired=+$('years').value,all=comparisons(spec,desired),rows=[];
- if(!all.length){$('status').textContent='Ingen afsluttede historiske perioder i DMI-arkivet.';return;}
- $('calc').disabled=true;$('work').classList.remove('hidden');$('status').classList.remove('error');
- $('result').classList.add('hidden');usedLayer.clearLayers();stationsLayer.clearLayers();
- setProgress(0,all.length,0,0,'');
- let done=0,failed=0,next=0,lastError=null;
- const concurrency=Math.min(3,all.length);
- async function worker(){
-  while(token===analysis){
-   const index=next++;if(index>=all.length)return;
-   const item=all[index];
-   try{
-    const row=await fetchOne(item,spec,b,token);
-    if(token!==analysis)return;
-    if(row.empty)failed++;else rows.push(row);
-   }catch(err){
-    if(token!==analysis)return;
-    if(err.name==='AbortError') {lastError=Error('DMI-opslaget tog for lang tid. Prøv igen eller vælg en mindre periode.');}
-    else lastError=err;
-    failed++;
-   }
-   if(token!==analysis)return;
-   done++;setProgress(done,all.length,rows.length,failed,String(item.year));
-   // Giv mobilen tid til at opdatere status og fremdrift.
-   await new Promise(resolve=>setTimeout(resolve,10));
-  }
- }
+  if(b[2]-b[0]>2||b[3]-b[1]>1.5)throw Error('Vælg et område på højst 2 × 1,5 breddegrader.');
+ }catch(e){$('status').textContent=e.message;$('status').classList.add('error');return}
+ $('calc').disabled=true;$('work').classList.remove('hidden');
+ $('status').classList.remove('error');$('result').classList.add('hidden');
+ usedLayer.clearLayers();stationsLayer.clearLayers();
+ const requestedYears=+$('years').value;
+ setProgress(0,requestedYears,0,0,'');
+ const payload={bbox:b,spec:{start:iso(spec.a),end:iso(spec.b),days:spec.days,months:spec.months,mode:spec.resolution,years:requestedYears}};
  try{
-  await Promise.all(Array.from({length:concurrency},()=>worker()));
+  $('status').textContent='Starter beregningen på serveren …';
+  const started=await fetch('/api/analyze/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),cache:'no-store'});
+  const initial=await started.json();
+  if(!started.ok)throw Error(initial.error||'Analyseserveren kunne ikke starte.');
+  if(token!==analysis){fetch('/api/analyze/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:initial.id})}).catch(()=>{});return}
+  analysisJobId=initial.id;
+  let result=null;
+  // All heavy computations happen on Render. Phone receives only tiny status objects.
+  for(let attempt=0;attempt<420;attempt++){
+   if(token!==analysis)return;
+   const statusResponse=await fetch('/api/analyze/status?id='+encodeURIComponent(analysisJobId),{cache:'no-store'});
+   const state=await statusResponse.json();
+   if(!statusResponse.ok)throw Error(state.error||'Kunne ikke hente beregningsstatus.');
+   if(token!==analysis)return;
+   setProgress(state.done||0,state.total||requestedYears,state.complete||0,state.failed||0,'');
+   if(state.status==='complete'){result=state.result;break;}
+   if(state.status==='error')throw Error(state.error||'DMI-beregningen mislykkedes.');
+   if(state.status==='cancelled')throw Error('Beregningen blev afbrudt.');
+   await delay(1000);
+  }
+  if(!result)throw Error('Beregningen overskred tidsgrænsen. Vælg kortere historik.');
   if(token!==analysis)return;
-  if(rows.length<3)throw Error('Kun '+rows.length+' historiske år havde tilstrækkelige data. '+(lastError?'Seneste fejl: '+lastError.message:'Prøv et større område eller en kortere historik.'));
-  rows.sort((a,b)=>a.year-b.year);
-  render(rows,spec,b,failed,token);
-  $('status').textContent='Færdig: '+rows.length+' historiske perioder · '+rows.reduce((a,r)=>a+r.cells.length,0)+' gridårs-bidrag.'+(failed?' ('+failed+' år uden data)':'');
+  const rows=result.rows.map(row=>({...row,cells:row.cells.map(cell=>({...cell,polygon:result.geometries[cell.id]}))}));
+  analysisJobId=null;
+  if(rows.length<3)throw Error('Ikke nok historiske år med brugbare målinger.');
+  render(rows,spec,b,result.failed||0,token);
+  $('status').textContent='Færdig: '+rows.length+' historiske perioder. Analysen er beregnet på serveren.';
  }catch(e){
   if(token===analysis){$('status').textContent='Beregningen mislykkedes: '+e.message;$('status').classList.add('error');}
- }finally{if(token===analysis){stopPending();endWork()}}
+ }finally{
+  if(token===analysis){stopPending();endWork();}
+ }
 };
 updateControls();
 </script></body></html>
