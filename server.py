@@ -91,6 +91,13 @@ class App(BaseHTTPRequestHandler):
   except (URLError,TimeoutError,OSError,ValueError) as exc:self.error(502,'DMI stationer: '+str(exc))
  def log_message(self,fmt,*args):print(fmt%args,flush=True)
 def smoke_test():
+ try:
+  station_url=DMI+'station/items?'+urlencode({'bbox':'11.5,54.8,12.3,55.4','limit':'200'})
+  with urlopen(Request(station_url,headers={'User-Agent':'RegnAtlas/2.0'}),timeout=25) as resp: stations=json.loads(resp.read(3000000))
+  fs=stations.get('features',[])
+  climate=[f for f in fs if 'acc_precip' in (f.get('properties',{}).get('parameterId') or [])]
+  print('DMI_SMOKE stations',len(fs),'rain_stations',len(climate),'example',json.dumps((climate or fs or [{}])[0].get('properties',{}).get('name')),flush=True)
+ except Exception as exc:print('DMI_SMOKE_ERROR stations',str(exc),flush=True)
  for mode in ('day','month'):
   params={'parameterId':'acc_precip','timeResolution':mode,'bbox':'11.8,54.9,12.1,55.2','datetime':'2024-10-01T00:00:00Z/2024-10-04T23:59:59Z' if mode=='day' else '2024-10-01T00:00:00Z/2024-10-31T23:59:59Z','limit':'15'}
   try:
